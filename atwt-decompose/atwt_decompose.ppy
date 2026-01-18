@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+from contextlib import suppress
+from logging import getLogger
+
+from PyQt6.QtWidgets import QLabel, QTabWidget, QWidget
+from vspreview.core import Frame, HBoxLayout, SpinBox, Stretch, VBoxLayout
+from vspreview.main import MainWindow
+from vspreview.plugins import AbstractPlugin, MappedNodesViewPlugin, PluginConfig
+from vstools import core, vs
+
+__all__ = ["ATWTFrequencyDecomposePlugin"]
+
+
+def _error_clip(src: vs.VideoNode, message: str) -> vs.VideoNode:
+    return src.std.BlankClip(keep=True).text.Text(message, 5, 4)
+
+
+def _atwt_available() -> bool:
+    return hasattr(core, "atwt") and hasattr(core.atwt, "ExtractFrequency") and hasattr(core.atwt, "ReplaceFrequency")
+
+
+def atwt_decompose(clip: vs.VideoNode, levels: int) -> tuple[list[vs.VideoNode], vs.VideoNode]:
+    """
+    Returns (details, base).
+
+    details[0] -> Level 1
+    details[i] -> Level i+1
+    base       -> Residual (low-frequency)
+    """
+
+    details: list[vs.VideoNode] = []
+    current_base = clip
+
+    for i in range(1, levels + 1):
+        d = core.atwt.ExtractFrequency(current_base, radius=i)
+        current_base = core.std.MakeDiff(current_base, d)
+        details.append(d)
+
+    return details, current_base
+
+
+class _ATWTLayerView(MappedNodesViewPlugin):
+    _autofit = True
+
+    def __init__(self, main: MainWindow, *, level: int | None, total_levels: int) -> None:
+        super().__init__(main)
+        self.level = level
+        self.total_levels = total_levels
+
+    def get_node(self, node: vs.VideoNode) -> vs.VideoNode:
+        if not _atwt_available():
+            msg = 'Required VapourSynth plugin "atwt" is not installed (Vapoursynth-ATWT).'
+            getLogger().error(msg)
+            return _error_clip(node, msg).std.CopyFrameProps(node)
+
+        try:
+            if self.level is None:
+                _details, base = atwt_decompose(node, self.total_levels)
+                return base.std.CopyFrameProps(node)
+
+            details, _base = atwt_decompose(node, self.level)
+            return details[-1].std.CopyFrameProps(node)
+        except Exception as e:
+            msg = f"ATWT decomposition failed: {e!s}"
+            getLogger().exception(msg)
+            return _error_clip(node, msg).std.CopyFrameProps(node)
+
+    def init_outputs(self) -> None:
+        super().init_outputs()
+        self.graphics_scene.init_scenes()
+        self.setup_view()
+
+
+class ATWTFrequencyDecomposePlugin(AbstractPlugin, QWidget):
+    _config = PluginConfig("dev.yuygfgg.atwt_frequency_decompose", "ATWT Frequency Decompose")
+
+    def __init__(self, main: MainWindow) -> None:
+        super().__init__(main)
+
+        self.views: list[_ATWTLayerView] = []
+        self.cache: list[tuple[int, int]] = []
+        self._outputs_initialized = False
+
+    def setup_ui(self) -> None:
+        self.levels_spinbox = SpinBox(None, 1, 12, value=4, valueChanged=self.rebuild_tabs)
+
+        self.tabs = QTabWidget()
+        self.tabs.currentChanged.connect(self.on_tab_change)
+
+        VBoxLayout(
+            self,
+            [
+                HBoxLayout([QLabel("Levels:"), self.levels_spinbox, Stretch(2)]),
+                self.tabs,
+            ],
+        )
+
+        self.rebuild_tabs()
+
+    def init_outputs(self) -> None:
+        assert self.main.outputs
+
+        self._outputs_initialized = True
+
+        for view in self.views:
+            view.init_outputs()
+
+        self.on_tab_change()
+
+    def _dispose_views(self) -> None:
+        # These views self-register into MainWindow's GraphicsView binding graph.
+        for view in self.views:
+            with suppress(Exception):
+                view.zoom_combobox.currentTextChanged.disconnect()
+
+            if hasattr(self.main, "bound_graphics_views"):
+                for bound_set in self.main.bound_graphics_views.values():
+                    bound_set.discard(view)
+                self.main.bound_graphics_views.pop(view, None)
+
+            view.setParent(None)
+            view.deleteLater()
+
+    def rebuild_tabs(self, _value: int | None = None) -> None:
+        levels = int(self.levels_spinbox.value())
+
+        self._dispose_views()
+        self.tabs.clear()
+        self.views.clear()
+        self.cache.clear()
+
+        for i in range(1, levels + 1):
+            view = _ATWTLayerView(self.main, level=i, total_levels=levels)
+            view.setup_ui()
+            self.tabs.addTab(view, f"Detail {i}")
+            self.views.append(view)
+
+        base_view = _ATWTLayerView(self.main, level=None, total_levels=levels)
+        base_view.setup_ui()
+        self.tabs.addTab(base_view, "Residual (Base)")
+        self.views.append(base_view)
+        self.cache = [(-1, -1)] * len(self.views)
+
+        # Only (re)initialize outputs and render after VSPreview calls `init_outputs()` for this plugin.
+        if self._outputs_initialized:
+            for view in self.views:
+                view.init_outputs()
+            self.on_tab_change()
+
+    def on_tab_change(self) -> None:
+        if not self._outputs_initialized:
+            return
+
+        if not self.views or not getattr(self.main, "current_output", None):
+            return
+
+        idx = self.tabs.currentIndex()
+        if idx < 0 or idx >= len(self.views) or idx >= len(self.cache):
+            return
+
+        key = (int(self.main.current_output.last_showed_frame), self.main.current_output.index)
+
+        if self.cache[idx] == key:
+            return
+
+        if self.cache[idx][1] != key[1]:
+            self.views[idx].on_current_output_changed(key[1], self.cache[idx][1])
+
+        self.views[idx].on_current_frame_changed(self.main.current_output.last_showed_frame)
+        self.cache[idx] = key
+
+    def on_current_frame_changed(self, frame: Frame) -> None:
+        if not self._outputs_initialized:
+            return
+
+        if not self.views:
+            return
+
+        idx = self.tabs.currentIndex()
+        if idx < 0 or idx >= len(self.views) or idx >= len(self.cache):
+            return
+
+        self.views[idx].on_current_frame_changed(frame)
+        self.cache[idx] = (int(frame), self.main.current_output.index)
+
+    def on_current_output_changed(self, index: int, prev_index: int) -> None:
+        if not self._outputs_initialized:
+            return
+
+        if not self.views:
+            return
+
+        idx = self.tabs.currentIndex()
+        if idx < 0 or idx >= len(self.views) or idx >= len(self.cache):
+            return
+
+        self.views[idx].on_current_output_changed(index, prev_index)
+        self.cache[idx] = (int(self.main.current_output.last_showed_frame), index)

@@ -143,3 +143,6 @@ dmypy.json
 
 # Video test file
 *.mkv
+
+# macOS
+.DS_Store
