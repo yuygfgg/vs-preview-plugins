@@ -3,8 +3,16 @@ from __future__ import annotations
 from contextlib import suppress
 from logging import getLogger
 
+from PyQt6.QtGui import QTransform
 from PyQt6.QtWidgets import QLabel, QTabWidget, QWidget
-from vspreview.core import Frame, HBoxLayout, SpinBox, Stretch, VBoxLayout
+from vspreview.core import (
+    DragEventType,
+    Frame,
+    HBoxLayout,
+    SpinBox,
+    Stretch,
+    VBoxLayout,
+)
 from vspreview.main import MainWindow
 from vspreview.plugins import AbstractPlugin, MappedNodesViewPlugin, PluginConfig
 from vstools import core, vs
@@ -56,6 +64,28 @@ class _ATWTLayerView(MappedNodesViewPlugin):
         self.level = level
         self.total_levels = total_levels
 
+    def _setZoom(self, value: float | None) -> None:  # noqa: N802
+        if self.underReload or value == 0:
+            return
+
+        if value is None:
+            if not self.autofit:
+                return
+
+            viewport = self.viewport()
+            assert viewport is not None
+            dpr = self.devicePixelRatio()
+
+            value = min(
+                (viewport.width() * dpr) / self.content_width,
+                (viewport.height() * dpr) / self.content_height,
+            )
+
+        self.currentZoom = value / self.devicePixelRatio()
+
+        self.setTransform(QTransform().scale(self.currentZoom, self.currentZoom))
+        self.dragEvent.emit(DragEventType.repaint)
+
     def get_node(self, node: vs.VideoNode) -> vs.VideoNode:
         if not _atwt_available():
             msg = 'Required VapourSynth plugin "atwt" is not installed (Vapoursynth-ATWT).'
@@ -77,6 +107,10 @@ class _ATWTLayerView(MappedNodesViewPlugin):
     def init_outputs(self) -> None:
         super().init_outputs()
         self.graphics_scene.init_scenes()
+        if self.main.toolbars.main.outputs_combobox.model() is not self.main.outputs:
+            return
+        if self.main.toolbars.main.outputs_combobox.currentData() is None:
+            return
         self.setup_view()
 
 
