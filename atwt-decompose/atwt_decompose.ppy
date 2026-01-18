@@ -17,10 +17,16 @@ def _error_clip(src: vs.VideoNode, message: str) -> vs.VideoNode:
 
 
 def _atwt_available() -> bool:
-    return hasattr(core, "atwt") and hasattr(core.atwt, "ExtractFrequency") and hasattr(core.atwt, "ReplaceFrequency")
+    return (
+        hasattr(core, "atwt")
+        and hasattr(core.atwt, "ExtractFrequency")
+        and hasattr(core.atwt, "ReplaceFrequency")
+    )
 
 
-def atwt_decompose(clip: vs.VideoNode, levels: int) -> tuple[list[vs.VideoNode], vs.VideoNode]:
+def atwt_decompose(
+    clip: vs.VideoNode, levels: int
+) -> tuple[list[vs.VideoNode], vs.VideoNode]:
     """
     Returns (details, base).
 
@@ -43,7 +49,9 @@ def atwt_decompose(clip: vs.VideoNode, levels: int) -> tuple[list[vs.VideoNode],
 class _ATWTLayerView(MappedNodesViewPlugin):
     _autofit = True
 
-    def __init__(self, main: MainWindow, *, level: int | None, total_levels: int) -> None:
+    def __init__(
+        self, main: MainWindow, *, level: int | None, total_levels: int
+    ) -> None:
         super().__init__(main)
         self.level = level
         self.total_levels = total_levels
@@ -73,7 +81,9 @@ class _ATWTLayerView(MappedNodesViewPlugin):
 
 
 class ATWTFrequencyDecomposePlugin(AbstractPlugin, QWidget):
-    _config = PluginConfig("dev.yuygfgg.atwt_frequency_decompose", "ATWT Frequency Decompose")
+    _config = PluginConfig(
+        "dev.yuygfgg.atwt_frequency_decompose", "ATWT Frequency Decompose"
+    )
 
     def __init__(self, main: MainWindow) -> None:
         super().__init__(main)
@@ -83,7 +93,9 @@ class ATWTFrequencyDecomposePlugin(AbstractPlugin, QWidget):
         self._outputs_initialized = False
 
     def setup_ui(self) -> None:
-        self.levels_spinbox = SpinBox(None, 1, 12, value=4, valueChanged=self.rebuild_tabs)
+        self.levels_spinbox = SpinBox(
+            None, 1, 12, value=4, valueChanged=self.rebuild_tabs
+        )
 
         self.tabs = QTabWidget()
         self.tabs.currentChanged.connect(self.on_tab_change)
@@ -159,7 +171,10 @@ class ATWTFrequencyDecomposePlugin(AbstractPlugin, QWidget):
         if idx < 0 or idx >= len(self.views) or idx >= len(self.cache):
             return
 
-        key = (int(self.main.current_output.last_showed_frame), self.main.current_output.index)
+        key = (
+            int(self.main.current_output.last_showed_frame),
+            self.main.current_output.index,
+        )
 
         if self.cache[idx] == key:
             return
@@ -167,7 +182,9 @@ class ATWTFrequencyDecomposePlugin(AbstractPlugin, QWidget):
         if self.cache[idx][1] != key[1]:
             self.views[idx].on_current_output_changed(key[1], self.cache[idx][1])
 
-        self.views[idx].on_current_frame_changed(self.main.current_output.last_showed_frame)
+        self.views[idx].on_current_frame_changed(
+            self.main.current_output.last_showed_frame
+        )
         self.cache[idx] = key
 
     def on_current_frame_changed(self, frame: Frame) -> None:
